@@ -4,6 +4,12 @@ import 'dragula/dist/dragula.css';
 import Swimlane from './Swimlane';
 import './Board.css';
 
+const STATUS_BY_LANE = {
+  backlog: 'backlog',
+  inProgress: 'in-progress',
+  complete: 'complete',
+};
+
 export default class Board extends React.Component {
   constructor(props) {
     super(props);
@@ -11,16 +17,89 @@ export default class Board extends React.Component {
     this.state = {
       clients: {
         backlog: clients.filter(client => !client.status || client.status === 'backlog'),
-        inProgress: clients.filter(client => client.status && client.status === 'in-progress'),
-        complete: clients.filter(client => client.status && client.status === 'complete'),
-      }
-    }
+        inProgress: clients.filter(client => client.status === 'in-progress'),
+        complete: clients.filter(client => client.status === 'complete'),
+      },
+    };
     this.swimlanes = {
       backlog: React.createRef(),
       inProgress: React.createRef(),
       complete: React.createRef(),
+    };
+    this.dragula = null;
+    this.handleDrop = this.handleDrop.bind(this);
+  }
+
+  componentDidMount() {
+    const containers = Object.keys(this.swimlanes)
+      .map(lane => this.swimlanes[lane].current)
+      .filter(Boolean);
+
+    this.dragula = Dragula(containers, {
+      moves: (el) => el.classList.contains('Card'),
+      accepts: (el, target) => containers.indexOf(target) !== -1,
+    });
+
+    this.dragula.on('drop', this.handleDrop);
+  }
+
+  componentWillUnmount() {
+    if (this.dragula) {
+      this.dragula.destroy();
+      this.dragula = null;
     }
   }
+
+  handleDrop(el, target) {
+    if (!el || !target) return;
+
+    const laneKey = Object.keys(this.swimlanes).find(
+      key => this.swimlanes[key].current === target
+    );
+    if (!laneKey) return;
+
+    const newStatus = STATUS_BY_LANE[laneKey];
+    const cardId = el.getAttribute('data-id');
+
+    // Read the DOM order after Dragula finishes moving the card. Updating React
+    // state keeps the moved lane, its card color, and subsequent reorders aligned.
+    this.setState(previousState => {
+      const allClients = Object.keys(previousState.clients)
+        .reduce((items, key) => items.concat(previousState.clients[key]), []);
+      const movedClient = allClients.find(client => String(client.id) === String(cardId));
+      if (!movedClient) return null;
+
+      const clientsByLane = {};
+      Object.keys(this.swimlanes).forEach(key => {
+        const container = this.swimlanes[key].current;
+        const ids = container
+          ? Array.from(container.querySelectorAll('.Card')).map(card => card.getAttribute('data-id'))
+          : [];
+        clientsByLane[key] = ids
+          .map(id => allClients.find(client => String(client.id) === String(id)))
+          .filter(Boolean)
+          .map(client => client.id === movedClient.id
+            ? { ...client, status: STATUS_BY_LANE[key] }
+            : { ...client, status: STATUS_BY_LANE[key] });
+      });
+
+      // Include any cards not found in the lane DOM (for example during a rapid
+      // drag/unmount) rather than accidentally dropping them from state.
+      const assignedIds = new Set(
+        Object.keys(clientsByLane).reduce((ids, key) => ids.concat(clientsByLane[key].map(client => String(client.id))), [])
+      );
+      allClients.forEach(client => {
+        if (!assignedIds.has(String(client.id))) {
+          const key = client.id === movedClient.id ? laneKey :
+            (Object.keys(this.swimlanes).find(candidate => client.status === STATUS_BY_LANE[candidate]) || 'backlog');
+          clientsByLane[key].push({ ...client, status: STATUS_BY_LANE[key] });
+        }
+      });
+
+      return { clients: clientsByLane };
+    });
+  }
+
   getClients() {
     return [
       ['1','Stark, White and Abbott','Cloned Optimal Architecture', 'in-progress'],
@@ -50,10 +129,9 @@ export default class Board extends React.Component {
       status: companyDetails[3],
     }));
   }
+
   renderSwimlane(name, clients, ref) {
-    return (
-      <Swimlane name={name} clients={clients} dragulaRef={ref}/>
-    );
+    return <Swimlane name={name} clients={clients} dragulaRef={ref} />;
   }
 
   render() {
