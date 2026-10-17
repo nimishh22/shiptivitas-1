@@ -4,6 +4,18 @@ import 'dragula/dist/dragula.css';
 import Swimlane from './Swimlane';
 import './Board.css';
 
+const STATUS_BY_LANE = {
+  backlog: 'backlog',
+  inProgress: 'in-progress',
+  complete: 'complete',
+};
+
+const LANE_BY_STATUS = {
+  backlog: 'backlog',
+  'in-progress': 'inProgress',
+  complete: 'complete',
+};
+
 export default class Board extends React.Component {
   constructor(props) {
     super(props);
@@ -11,16 +23,92 @@ export default class Board extends React.Component {
     this.state = {
       clients: {
         backlog: clients.filter(client => !client.status || client.status === 'backlog'),
-        inProgress: clients.filter(client => client.status && client.status === 'in-progress'),
-        complete: clients.filter(client => client.status && client.status === 'complete'),
-      }
-    }
+        inProgress: clients.filter(client => client.status === 'in-progress'),
+        complete: clients.filter(client => client.status === 'complete'),
+      },
+    };
     this.swimlanes = {
       backlog: React.createRef(),
       inProgress: React.createRef(),
       complete: React.createRef(),
+    };
+    this.dragula = null;
+    this.handleDrop = this.handleDrop.bind(this);
+  }
+
+  componentDidMount() {
+    const containers = Object.keys(this.swimlanes)
+      .map(lane => this.swimlanes[lane].current)
+      .filter(Boolean);
+
+    this.dragula = Dragula(containers, {
+      moves: el => el.classList.contains('Card'),
+      accepts: (el, target) => containers.indexOf(target) !== -1,
+    });
+    this.dragula.on('drop', this.handleDrop);
+  }
+
+  componentWillUnmount() {
+    if (this.dragula) {
+      this.dragula.destroy();
+      this.dragula = null;
     }
   }
+
+  handleDrop(el, target) {
+    if (!el || !target) return;
+
+    const targetLane = Object.keys(this.swimlanes).find(
+      key => this.swimlanes[key].current === target
+    );
+    if (!targetLane) return;
+
+    const movedCardId = String(el.getAttribute('data-id'));
+
+    // Dragula has already updated the DOM at this point. Synchronize the DOM
+    // order with React so subsequent renders preserve both sorting and status.
+    this.setState(previousState => {
+      const allClients = Object.keys(previousState.clients)
+        .reduce((items, key) => items.concat(previousState.clients[key]), []);
+      const clientsById = {};
+      allClients.forEach(client => {
+        clientsById[String(client.id)] = client;
+      });
+
+      const clients = { backlog: [], inProgress: [], complete: [] };
+      const assignedIds = new Set();
+
+      Object.keys(this.swimlanes).forEach(lane => {
+        const container = this.swimlanes[lane].current;
+        if (!container) return;
+
+        Array.from(container.querySelectorAll('.Card')).forEach(card => {
+          const id = String(card.getAttribute('data-id'));
+          const client = clientsById[id];
+          if (!client || assignedIds.has(id)) return;
+
+          const status = id === movedCardId
+            ? STATUS_BY_LANE[targetLane]
+            : STATUS_BY_LANE[lane];
+          clients[lane].push({ ...client, status });
+          assignedIds.add(id);
+        });
+      });
+
+      // Keep any card not present in the DOM, without losing its existing lane.
+      allClients.forEach(client => {
+        const id = String(client.id);
+        if (assignedIds.has(id)) return;
+        const lane = id === movedCardId
+          ? targetLane
+          : (LANE_BY_STATUS[client.status] || 'backlog');
+        clients[lane].push({ ...client, status: STATUS_BY_LANE[lane] });
+      });
+
+      return { clients };
+    });
+  }
+
   getClients() {
     return [
       ['1','Stark, White and Abbott','Cloned Optimal Architecture', 'in-progress'],
@@ -50,10 +138,9 @@ export default class Board extends React.Component {
       status: companyDetails[3],
     }));
   }
+
   renderSwimlane(name, clients, ref) {
-    return (
-      <Swimlane name={name} clients={clients} dragulaRef={ref}/>
-    );
+    return <Swimlane name={name} clients={clients} dragulaRef={ref} />;
   }
 
   render() {

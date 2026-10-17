@@ -1,3 +1,12 @@
 .Board {
   margin-top: 12px;
 }
+
+.Board .row > [class*="col-"] {
+  min-width: 0;
+}
+
+.Board .Swimlane-column {
+  height: 100%;
+}
+
