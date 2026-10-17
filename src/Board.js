@@ -36,10 +36,9 @@ export default class Board extends React.Component {
       .filter(Boolean);
 
     this.dragula = Dragula(containers, {
-      moves: (el) => el.classList.contains('Card'),
+      moves: el => el.classList.contains('Card'),
       accepts: (el, target) => containers.indexOf(target) !== -1,
     });
-
     this.dragula.on('drop', this.handleDrop);
   }
 
@@ -58,45 +57,49 @@ export default class Board extends React.Component {
     );
     if (!laneKey) return;
 
-    const newStatus = STATUS_BY_LANE[laneKey];
+    const laneStatus = STATUS_BY_LANE[laneKey];
     const cardId = el.getAttribute('data-id');
 
-    // Read the DOM order after Dragula finishes moving the card. Updating React
-    // state keeps the moved lane, its card color, and subsequent reorders aligned.
+    // Capture DOM order after Dragula's drop, then make React state authoritative
+    // for both lane membership and order. No backend persistence is performed.
     this.setState(previousState => {
       const allClients = Object.keys(previousState.clients)
         .reduce((items, key) => items.concat(previousState.clients[key]), []);
-      const movedClient = allClients.find(client => String(client.id) === String(cardId));
-      if (!movedClient) return null;
+      const clientsById = {};
+      allClients.forEach(client => {
+        clientsById[String(client.id)] = client;
+      });
 
-      const clientsByLane = {};
+      const clients = { backlog: [], inProgress: [], complete: [] };
+      const assignedIds = new Set();
+
       Object.keys(this.swimlanes).forEach(key => {
         const container = this.swimlanes[key].current;
-        const ids = container
-          ? Array.from(container.querySelectorAll('.Card')).map(card => card.getAttribute('data-id'))
-          : [];
-        clientsByLane[key] = ids
-          .map(id => allClients.find(client => String(client.id) === String(id)))
-          .filter(Boolean)
-          .map(client => client.id === movedClient.id
-            ? { ...client, status: STATUS_BY_LANE[key] }
-            : { ...client, status: STATUS_BY_LANE[key] });
+        if (!container) return;
+
+        Array.from(container.querySelectorAll('.Card')).forEach(card => {
+          const id = card.getAttribute('data-id');
+          const client = clientsById[String(id)];
+          if (!client || assignedIds.has(String(id))) return;
+          const status = String(id) === String(cardId)
+            ? laneStatus
+            : STATUS_BY_LANE[key];
+          clients[key].push({ ...client, status });
+          assignedIds.add(String(id));
+        });
       });
 
-      // Include any cards not found in the lane DOM (for example during a rapid
-      // drag/unmount) rather than accidentally dropping them from state.
-      const assignedIds = new Set(
-        Object.keys(clientsByLane).reduce((ids, key) => ids.concat(clientsByLane[key].map(client => String(client.id))), [])
-      );
+      // Defensive fallback if a card was temporarily absent from a container.
       allClients.forEach(client => {
-        if (!assignedIds.has(String(client.id))) {
-          const key = client.id === movedClient.id ? laneKey :
-            (Object.keys(this.swimlanes).find(candidate => client.status === STATUS_BY_LANE[candidate]) || 'backlog');
-          clientsByLane[key].push({ ...client, status: STATUS_BY_LANE[key] });
-        }
+        const id = String(client.id);
+        if (assignedIds.has(id)) return;
+        const status = id === String(cardId) ? laneStatus : client.status;
+        const key = status === 'in-progress' ? 'inProgress'
+          : status === 'complete' ? 'complete' : 'backlog';
+        clients[key].push({ ...client, status: STATUS_BY_LANE[key] });
       });
 
-      return { clients: clientsByLane };
+      return { clients };
     });
   }
 
